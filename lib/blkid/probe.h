@@ -226,6 +226,39 @@ struct swap_id_block {
 	__u32		sws_badpg;
 };
 
+typedef struct exfat_super_block {
+/* 00*/	__u8	ignored[3];	/* Bootstrap code */
+/* 03*/	char		fs_name[8];	/* Name of fs, should be "EXFAT   "  */
+/* 0b*/	__u8	zero_bytes[53];	/* Must be zero bytes */
+/* 40*/	__u64	part_off;    	/* Partition offset (in sector) */
+/* 48*/	__u64	vol_len;	       /* Volume length (in sector) */
+/* 50*/	__u32	fat_off;		/* FATs start sector */
+/* 54*/	__u32	fat_len;		/* FATs length */
+/* 58*/	__u32      cluster_heap_off;  /* Cluster heap */
+/* 5c*/	__u32      cluster_cnt;            /* Cluster  count */
+/* 60*/	__u32      root_cluster;             /* first cluster of root dir */
+/* 64*/	__u8       vol_serial[4];
+/* 68*/	__u16      fs_version;
+/* 6a*/	__u16      vol_flags;
+/* 6b*/	__u8       sector_size_bits;
+/* 6c*/	__u8       sectors_per_clu_bits;
+/* 6e*/	__u8       num_fats;
+/* 6e*/	__u8       phy_drv_no;
+/* 6f*/	__u8       perc_in_use;
+/* 70*/	__u8       reserved[7];
+/* 77*/	__u8       boot_code[390];
+/*1fe*/	__u8       boot_signature[2];
+} exfat_super_block;
+
+
+typedef struct exfat_dir_entry {
+	__u8   entry_type;
+	__u8   secondary_cnt;
+	__u8    name[22];
+	__u8    reserved0[8];
+}exfat_dir_entry;
+
+
 /* Yucky misaligned values */
 struct vfat_super_block {
 /* 00*/	unsigned char	vs_ignored[3];

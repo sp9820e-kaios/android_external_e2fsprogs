@@ -673,6 +673,7 @@ static int add_journal(ext2_filsys fs)
 			com_err(program_name, retval,
 				_("\n\twhile trying to open journal on %s\n"),
 				journal_device);
+			ext2fs_close(jfs);
 			goto err;
 		}
 		printf(_("Creating journal on device %s: "),
@@ -1044,6 +1045,9 @@ static void parse_tune2fs_options(int argc, char **argv)
 #endif
 		case 'r':
 			reserved_blocks = strtoul(optarg, &tmp, 0);
+#ifdef ERROR_PANIC
+			errors = EXT2_ERRORS_PANIC; /* default to panic */
+#endif
 			if (*tmp) {
 				com_err(program_name, 0,
 					_("bad reserved blocks count - %s"),
@@ -2058,6 +2062,11 @@ retry_open:
 			reserved_ratio, ext2fs_r_blocks_count(sb));
 	}
 	if (r_flag) {
+#ifdef ERROR_PANIC
+		sb->s_errors = errors;
+		ext2fs_mark_super_dirty(fs);
+		printf(_("Setting error behavior to %d\n"), errors);
+#endif
 		if (reserved_blocks > ext2fs_blocks_count(sb)/2) {
 			com_err(program_name, 0,
 				_("reserved blocks count is too big (%llu)"),
@@ -2065,10 +2074,16 @@ retry_open:
 			rc = 1;
 			goto closefs;
 		}
-		ext2fs_r_blocks_count_set(sb, reserved_blocks);
-		ext2fs_mark_super_dirty(fs);
-		printf(_("Setting reserved blocks count to %llu\n"),
-		       reserved_blocks);
+		if (ext2fs_r_blocks_count(sb) == reserved_blocks) {
+			printf(_("Reserved blocks is already %llu, do nothing\n"),
+                                reserved_blocks);
+		}
+		else {
+			ext2fs_r_blocks_count_set(sb, reserved_blocks);
+			ext2fs_mark_super_dirty(fs);
+			printf(_("Setting reserved blocks count to %llu\n"),
+				reserved_blocks);
+		}
 	}
 	if (s_flag == 1) {
 		if (sb->s_feature_ro_compat &

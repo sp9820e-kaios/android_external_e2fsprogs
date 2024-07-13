@@ -8,7 +8,8 @@ resize2fs_src_files := \
 	sim_progress.c \
 	resource_track.c
 
-resize2fs_c_includes := external/e2fsprogs/lib
+resize2fs_c_includes := external/e2fsprogs/lib \
+	system/core/fs_mgr/include
 
 resize2fs_cflags := -O2 -g -W -Wall \
 	-DHAVE_UNISTD_H \
@@ -41,9 +42,20 @@ resize2fs_shared_libraries := \
 	libext2_com_err \
 	libext2_e2p \
 	libext2_uuid \
-	libext2_blkid
+	libext2_blkid \
+	libcutils
 
 resize2fs_system_shared_libraries := libc
+
+resize2fs_static_libraries := \
+	libext2fs \
+	libext2_com_err \
+	libext2_e2p \
+	libext2_uuid_static \
+	libext2_blkid \
+	libfs_mgr \
+	libcutils \
+	libc
 
 include $(CLEAR_VARS)
 
@@ -52,6 +64,7 @@ LOCAL_C_INCLUDES := $(resize2fs_c_includes)
 LOCAL_CFLAGS := $(resize2fs_cflags)
 LOCAL_SHARED_LIBRARIES := $(resize2fs_shared_libraries)
 LOCAL_SYSTEM_SHARED_LIBRARIES := $(resize2fs_system_shared_libraries)
+LOCAL_STATIC_LIBRARIES := libfs_mgr
 LOCAL_MODULE := resize2fs
 LOCAL_MODULE_TAGS := optional
 include $(BUILD_EXECUTABLE)

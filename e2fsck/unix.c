@@ -1298,6 +1298,7 @@ restart:
 				ctx->program_name,
 				retval ? _("Superblock invalid,") :
 				_("Group descriptors look bad..."));
+			goto failure;
 			orig_superblock = ctx->superblock;
 			get_backup_sb(ctx, fs, ctx->filesystem_name, io_ptr);
 			if (fs)

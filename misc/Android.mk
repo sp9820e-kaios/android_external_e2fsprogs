@@ -122,6 +122,10 @@ tune2fs_cflags := -O2 -g -W -Wall \
 
 tune2fs_cflags += -DNO_CHECK_BB
 
+ifeq ($(TARGET_BUILD_VARIANT),userdebug)
+tune2fs_cflags += -DERROR_PANIC
+endif
+
 tune2fs_shared_libraries := \
 	libext2fs \
 	libext2_com_err \

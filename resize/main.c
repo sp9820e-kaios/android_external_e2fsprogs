@@ -35,6 +35,9 @@ extern int optind;
 
 #include "../version.h"
 
+#include <fs_mgr.h>
+#include <cutils/klog.h>
+
 char *program_name;
 static char *device_name, *io_options;
 
@@ -167,6 +170,8 @@ int main (int argc, char ** argv)
 	int		flags = 0;
 	int		flush = 0;
 	int		force = 0;
+	int		encryption = 0;
+	int		encryption_footer = 0;
 	int		io_flags = 0;
 	int		force_min_size = 0;
 	int		print_min_size = 0;
@@ -183,6 +188,11 @@ int main (int argc, char ** argv)
 	long		sysval;
 	int		len, mount_flags;
 	char		*mtpt;
+	struct fstab	*fstab;
+
+	klog_init();
+	klog_set_level(6);
+	KLOG_INFO("resize2fs", "resize2fs %s (%s)\n",E2FSPROGS_VERSION, E2FSPROGS_DATE);
 
 #ifdef ENABLE_NLS
 	setlocale(LC_MESSAGES, "");
@@ -199,7 +209,7 @@ int main (int argc, char ** argv)
 	if (argc && *argv)
 		program_name = *argv;
 
-	while ((c = getopt (argc, argv, "d:fFhMPpS:")) != EOF) {
+	while ((c = getopt (argc, argv, "d:fFhMPpS:e")) != EOF) {
 		switch (c) {
 		case 'h':
 			usage(program_name);
@@ -225,6 +235,10 @@ int main (int argc, char ** argv)
 		case 'S':
 			use_stride = atoi(optarg);
 			break;
+		case 'e':
+			encryption = 1;
+			encryption_footer = 0;
+			break;
 		default:
 			usage(program_name);
 		}
@@ -233,6 +247,37 @@ int main (int argc, char ** argv)
 		usage(program_name);
 
 	device_name = argv[optind++];
+
+	if (encryption) {
+		int i = 0;
+		fstab = fs_mgr_read_fstab(device_name);
+		if (!fstab) {
+			KLOG_INFO("resize2fs", "failed to open %s.\n" , device_name);
+			exit(1);
+		}
+
+		/* Loop through entries looking for data */
+		for (i = 0; i < fstab->num_entries; i++) {
+			if (!strcmp(fstab->recs[i].mount_point, "/data")) {
+				device_name = fstab->recs[i].blk_device;
+				KLOG_INFO("resize2fs", "Found %s in fstab.\n" , device_name);
+				if (fs_mgr_is_encryptable(&fstab->recs[i])) {
+					encryption_footer = 1;
+					KLOG_INFO("resize2fs", "%s is encryptable.\n" , device_name);
+				}
+				else {
+					KLOG_INFO("resize2fs", "%s in not encryptable.\n" , device_name);
+				}
+				break;
+			}
+		}
+		if (i == fstab->num_entries) {
+			KLOG_INFO("resize2fs", "Cannot find /data in %s.\n", device_name);
+			exit(1);
+		}
+
+	}
+
 	if (optind < argc)
 		new_size_str = argv[optind++];
 	if (optind < argc)
@@ -379,6 +424,25 @@ int main (int argc, char ** argv)
 		}
 	} else {
 		new_size = max_size;
+
+		KLOG_INFO("resize2fs", "Max filesystem length is %llu blocks\n", new_size);
+		/* If footer encryption enabled, skip the last 16K */
+		if (encryption && encryption_footer){
+			blk_t encrypt_blk = parse_num_blocks("16K", fs->super->s_log_block_size);
+			char  *encrypt_buf= NULL;
+			new_size -= encrypt_blk;
+			if (encrypt_buf = malloc(fs->blocksize)) {
+				if (!io_channel_read_blk(fs->io, max_size-encrypt_blk, 1, encrypt_buf) &&
+								*((unsigned int*)encrypt_buf) == 0xD0B5B1C4) {
+					KLOG_INFO("resize2fs", "Found magic %X at footer, set the max filesystem length to %llu blocks\n",
+								*((unsigned int*)encrypt_buf), new_size);
+				}
+				else
+					KLOG_INFO("resize2fs", "Encryption reserve 16K, set the max filesystem length to %llu blocks\n", new_size);
+				free(encrypt_buf);
+			}
+		}
+
 		/* Round down to an even multiple of a pagesize */
 		if (sys_page_size > fs->blocksize)
 			new_size &= ~((sys_page_size / fs->blocksize)-1);
@@ -437,6 +501,7 @@ int main (int argc, char ** argv)
 	if (new_size == ext2fs_blocks_count(fs->super)) {
 		fprintf(stderr, _("The filesystem is already %llu blocks "
 			"long.  Nothing to do!\n\n"), new_size);
+		KLOG_INFO("resize2fs", "The filesystem is already %llu blocks long.  Nothing to do!\n\n", new_size);
 		exit(0);
 	}
 	if (mount_flags & EXT2_MF_MOUNTED) {
@@ -455,6 +520,9 @@ int main (int argc, char ** argv)
 		printf(_("Resizing the filesystem on "
 			 "%s to %llu (%dk) blocks.\n"),
 		       device_name, new_size, fs->blocksize / 1024);
+		KLOG_INFO("resize2fs", "Resizing the filesystem on "
+			 "%s to %llu (%dk) blocks.\n",
+		       device_name, new_size, fs->blocksize / 1024);
 		retval = resize_fs(fs, &new_size, flags,
 				   ((flags & RESIZE_PERCENT_COMPLETE) ?
 				    resize_progress_func : 0));
@@ -470,8 +538,11 @@ int main (int argc, char ** argv)
 		ext2fs_close(fs);
 		exit(1);
 	}
+	if (fd > 0)
+		ext2fs_sync_device(fd, 1);
 	printf(_("The filesystem on %s is now %llu blocks long.\n\n"),
 	       device_name, new_size);
+	KLOG_INFO("resize2fs", "The filesystem on %s is now %llu blocks long.\n\n", device_name, new_size);
 
 	if ((st_buf.st_size > new_file_size) &&
 	    (fd > 0)) {

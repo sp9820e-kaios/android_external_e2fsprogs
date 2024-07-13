@@ -585,7 +585,7 @@ static int probe_fat(struct blkid_probe *probe,
 			int count;
 
 			next_sect_off = (next - 2) * vs->vs_cluster_size;
-			next_off = (start_data_sect + next_sect_off) *
+			next_off = (__u64)(start_data_sect + next_sect_off) *
 				sector_size;
 
 			dir = (struct vfat_dir_entry *)
@@ -608,6 +608,8 @@ static int probe_fat(struct blkid_probe *probe,
 
 			/* set next cluster */
 			next = blkid_le32(*((__u32 *) buf) & 0x0fffffff);
+			if (next > cluster_count || next < 2)
+				break;
 		}
 
 		if (!vol_label || !memcmp(vol_label, no_name, 11))
@@ -676,6 +678,159 @@ static int probe_fat_nomagic(struct blkid_probe *probe,
 
 	return probe_fat(probe, id, buf);
 }
+
+
+/* Exfat uses unicode16 (little-endian) for label and file name. */
+static void unicode_16le_to_utf8(unsigned char *str, int out_len,
+				 const unsigned char *buf, int in_len)
+{
+	int i, j;
+	unsigned int c;
+
+	for (i = j = 0; i + 2 <= in_len; i += 2) {
+		c = (buf[i+1] << 8) | buf[i];
+		if (c == 0) {
+			str[j] = '\0';
+			break;
+		} else if (c < 0x80) {
+			if (j+1 >= out_len)
+				break;
+			str[j++] = (unsigned char) c;
+		} else if (c < 0x800) {
+			if (j+2 >= out_len)
+				break;
+			str[j++] = (unsigned char) (0xc0 | (c >> 6));
+			str[j++] = (unsigned char) (0x80 | (c & 0x3f));
+		} else {
+			if (j+3 >= out_len)
+				break;
+			str[j++] = (unsigned char) (0xe0 | (c >> 12));
+			str[j++] = (unsigned char) (0x80 | ((c >> 6) & 0x3f));
+			str[j++] = (unsigned char) (0x80 | (c & 0x3f));
+		}
+	}
+	str[j] = '\0';
+}
+
+static int search_exfat_label(exfat_dir_entry *dir, int count, const unsigned char **label)
+{
+	int i, ret = 0;
+
+	for (i = 0; i < count; i++) {
+		if (dir[i].entry_type == 0x00)
+			return -1;
+
+		if (dir[i].entry_type != 0x83)
+			continue;
+
+		if (dir[i].secondary_cnt==0 || dir[i].secondary_cnt > 15)
+			continue;
+
+		*label = dir[i].name;
+		ret = dir[i].secondary_cnt;
+		break;
+	}
+
+	return ret;
+}
+
+static int probe_exfat(struct blkid_probe *probe,
+		      struct blkid_magic *id __BLKID_ATTR((unused)),
+		      unsigned char *buf)
+{
+	exfat_super_block *vs = (exfat_super_block *) buf;
+	exfat_dir_entry  *dir;
+	char serno[10];
+	const unsigned char utf8_buf[48];
+	const unsigned char *label = 0, *vol_label = 0;
+	unsigned char	*vol_serno;
+	int label_len = 0, maxloop = 100;
+	__u16 sector_size, cl_size, fs_version;
+	__u32 root_cluster, cluster_count;
+	__u32 buf_size, start_data_sect, start_fat_sect, next;
+
+	vol_serno = vs->vol_serial;
+	cl_size = 1 << vs->sectors_per_clu_bits;
+	sector_size = 1 << vs->sector_size_bits;
+	buf_size = 1 << (vs->sector_size_bits + vs->sectors_per_clu_bits);
+	start_data_sect = blkid_le32(vs->cluster_heap_off);
+	start_fat_sect = blkid_le32(vs->fat_off);
+	cluster_count = blkid_le32(vs->cluster_cnt);
+	root_cluster = blkid_le32(vs->root_cluster);
+	fs_version = blkid_le16(vs->fs_version);
+
+	if (fs_version != 0x0100) {
+		DBG(DEBUG_PROBE, printf("Error: exfat version %04x may not be supported.\n", fs_version));
+		return 1;
+	}
+
+	if (root_cluster < 2 || root_cluster >= cluster_count) {
+		DBG(DEBUG_PROBE, printf("Error: root dir start cluster %d out of range.\n", root_cluster));
+		return 1;
+	}
+
+	if (vs->sector_size_bits > 12 || vs->sector_size_bits < 9 ||
+		(vs->sector_size_bits + vs->sectors_per_clu_bits) > 25) {
+		DBG(DEBUG_PROBE, printf("Unregular sector or cluster size: sector=%u, cluster=%u\n", 1 << vs->sector_size_bits,
+					1 << (vs->sector_size_bits + vs->sectors_per_clu_bits)));
+		return 1;
+	}
+
+	/* Search the exFAT root dir for the label attribute */
+	next = blkid_le32(vs->root_cluster);
+	while (next && --maxloop) {
+		__u32 next_sect_off;
+		__u64 next_off, fat_entry_off;
+		int count;
+
+		next_sect_off = start_data_sect + (next - 2) * cl_size;
+		next_off =  (__u64)next_sect_off * sector_size;
+		DBG(DEBUG_PROBE, printf("probe_exfat: next=%u, next_sect_off=%u, next_off=%llu\n", next,  next_sect_off, next_off));
+
+		dir = (exfat_dir_entry *)get_buffer(probe, next_off, buf_size);
+		if (dir == NULL) {
+			DBG(DEBUG_PROBE, printf("get buffer NULL.\n"));
+			break;
+		}
+
+		count = buf_size / sizeof(exfat_dir_entry);
+
+		label_len = search_exfat_label(dir, count, &vol_label);
+		if (label_len != 0)
+			break;
+
+		fat_entry_off = (blkid_le32(vs->fat_off) * sector_size) + (next * sizeof(__u32));
+		buf = get_buffer(probe, fat_entry_off, buf_size);
+		if (buf == NULL)
+			break;
+
+		/* set next cluster */
+		next = blkid_le32(*((__u32 *) buf));
+		if (next < 2 || next > cluster_count) {
+			DBG(DEBUG_PROBE, printf("Exfat: get end of root cluster."));
+			break;
+		}
+	}
+
+	if (vol_label) {
+		unicode_16le_to_utf8(utf8_buf, 48, vol_label, label_len*2);
+		label = utf8_buf;
+		label_len = strlen(label);
+	} else {
+		label_len = 0;
+		label = NULL;
+	}
+
+	/* We can't just print them as %04X, because they are unaligned */
+	sprintf(serno, "%02X%02X-%02X%02X", vol_serno[3], vol_serno[2],
+		vol_serno[1], vol_serno[0]);
+
+	blkid_set_tag(probe->dev, "LABEL", (const char *) label, label_len);
+	blkid_set_tag(probe->dev, "UUID", serno, sizeof(serno)-1);
+
+	return 0;
+}
+
 
 static int probe_ntfs(struct blkid_probe *probe,
 		      struct blkid_magic *id __BLKID_ATTR((unused)),
@@ -1428,6 +1583,7 @@ static struct blkid_magic type_array[] = {
   { "vfat",      0,      0,  1, "\353",                 probe_fat_nomagic },
   { "vfat",      0,      0,  1, "\351",                 probe_fat_nomagic },
   { "vfat",      0,  0x1fe,  2, "\125\252",             probe_fat_nomagic },
+  { "exfat",     0,  3,  8, "EXFAT   ",             probe_exfat},
   { "minix",     1,   0x10,  2, "\177\023",             0 },
   { "minix",     1,   0x10,  2, "\217\023",             0 },
   { "minix",	 1,   0x10,  2, "\150\044",		0 },
